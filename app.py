@@ -3,16 +3,7 @@ import pandas as pd
 import openpyxl
 from io import BytesIO
 
-st.title("Donor Type & RM Auto-Fill (Batch Report)")
-
-st.markdown(
-    """
-Upload **Data Sponsor** (sumber Donor Type & RM) dan **Batch Daily Report** (file yang mau diisi).
-App akan mencocokkan `PartnerID` di Batch Report dengan `ID_Partner` di Data Sponsor, lalu:
-- Kolom **ChequeDate** akan diisi **Donor Type**
-- Kolom **BankName** akan diisi **RM**
-"""
-)
+st.title("Crystal Report")
 
 sponsor_file = st.file_uploader("Upload Data Sponsor (.xlsx)", type=["xlsx"])
 batch_file = st.file_uploader("Upload Batch Daily Report (.xlsx)", type=["xlsx"])
@@ -82,28 +73,53 @@ def process_batch_report(file, lookup):
     not_found = 0
     not_found_ids = []
 
-    # Catatan penting: di file batch report ini, label header "PartnerID",
-    # "ChequeDate", "BankName" tertulis di kolom C/F/G, TAPI data riil di
-    # bawahnya selalu mulai dari kolom A dengan urutan tetap:
-    # A=PartnerID, B=Partner Name, C=ChequeDate, D=BankName, E=Payment Amount.
-    # Jadi kita pakai posisi data riil (bukan posisi label header).
-    COL_PARTNERID = 1
-    COL_CHEQUEDATE = 3
-    COL_BANKNAME = 4
-
     in_batch_block = False
+    col_partnerid_data = None   # kolom tempat data PartnerID sebenarnya berada
+    col_chequedate_out = None   # kolom di bawah header label "ChequeDate"
+    col_bankname_out = None     # kolom di bawah header label "BankName"
+
+    max_col = ws.max_column
 
     for row in range(1, ws.max_row + 1):
-        cell_c = ws.cell(row, 3).value  # cek label header "PartnerID" di kolom C
+        row_values = [ws.cell(row, c).value for c in range(1, max_col + 1)]
 
-        if cell_c is not None and str(cell_c).strip() == "PartnerID":
+        header_cols = {
+            str(v).strip(): idx + 1
+            for idx, v in enumerate(row_values)
+            if v is not None and str(v).strip() in ("PartnerID", "ChequeDate", "BankName")
+        }
+
+        if "PartnerID" in header_cols:
+            label_partnerid = header_cols["PartnerID"]
+            col_chequedate_out = header_cols.get("ChequeDate")
+            col_bankname_out = header_cols.get("BankName")
+
+            # Cari kolom data PartnerID sesungguhnya (kadang data bergeser
+            # ke kiri dibanding posisi label header), dengan cek baris
+            # berikutnya yang berisi angka.
+            col_partnerid_data = label_partnerid
+            for probe_row in range(row + 1, min(row + 5, ws.max_row + 1)):
+                found = False
+                for c in range(1, label_partnerid + 1):
+                    val = ws.cell(probe_row, c).value
+                    if val is not None:
+                        try:
+                            float(val)
+                            col_partnerid_data = c
+                            found = True
+                        except (ValueError, TypeError):
+                            pass
+                        break
+                if found:
+                    break
+
             in_batch_block = True
             continue
 
-        if not in_batch_block:
+        if not in_batch_block or col_partnerid_data is None:
             continue
 
-        partner_id_raw = ws.cell(row, COL_PARTNERID).value
+        partner_id_raw = ws.cell(row, col_partnerid_data).value
 
         # Berhenti / skip baris non-data (Total Batch Amount, baris kosong, dll)
         if partner_id_raw is None:
@@ -122,8 +138,10 @@ def process_batch_report(file, lookup):
             donor_type = lookup[partner_id]["TYPE"]
             rm = lookup[partner_id]["RM"]
 
-            ws.cell(row, COL_CHEQUEDATE).value = donor_type
-            ws.cell(row, COL_BANKNAME).value = rm
+            if col_chequedate_out:
+                ws.cell(row, col_chequedate_out).value = donor_type
+            if col_bankname_out:
+                ws.cell(row, col_bankname_out).value = rm
 
             matched += 1
         else:
@@ -152,7 +170,7 @@ if sponsor_file and batch_file:
         with st.expander("Lihat PartnerID yang tidak ditemukan di Data Sponsor"):
             st.write(sorted(set(not_found_ids)))
 
-    st.success("Selesai! Kolom ChequeDate sudah berisi Donor Type, kolom BankName sudah berisi RM.")
+    st.success("Selesai!")
 
     st.download_button(
         "Download Hasil (Batch Report Updated)",

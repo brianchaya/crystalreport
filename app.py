@@ -231,6 +231,3 @@ if sponsor_file and batch_file:
     )
 else:
     st.info("Silakan upload kedua file untuk memulai.")
-
-exit code 0
-Done

@@ -48,6 +48,18 @@ def clean_pid(x):
     except: return str(x).strip()
 
 
+def is_summary_data_row(row):
+    """Cek apakah baris ini adalah data row di summary (bukan header, bukan subtotal, bukan kosong)."""
+    non_empty = [v for v in row if v not in ('', None)]
+    if not non_empty:
+        return False, 'empty'
+    if len(non_empty) == 1 and isinstance(row[0], (int, float)):
+        return False, 'subtotal'
+    if str(row[0]).strip() == 'Acount Fund':
+        return False, 'header'
+    return True, 'data'
+
+
 # ==============================
 # PROCESS
 # ==============================
@@ -58,46 +70,90 @@ def process(file_bytes, lookup):
     nrows = ws_in.nrows
 
     # ------------------------------------------------------------------
-    # Pass 1: Kumpulkan desig → {Mass/Middle/Major: total_amount} per batch
-    # Col (0-indexed) di data rows:
-    #   col0 = PartnerID, col4 = amount, col5 = designation
+    # Pass 1: Per batch, kumpulkan:
+    #   - desig_amounts : desig → {Mass, Middle, Major, Unknown: float}
+    #   - desig_count   : desig → berapa kali muncul di summary-nya
+    #
+    # Col (0-indexed) di batch data rows:
+    #   col0=PartnerID  col4=amount  col5=designation
+    # Col (0-indexed) di summary data rows:
+    #   col0=acct_fund  col1=designation  col2=description  col3=amount
     # ------------------------------------------------------------------
-    batch_desig_list = []
-    cur_desig        = None
-    in_batch         = False
+    all_desig_amounts = []   # list of dict per batch
+    all_desig_counts  = []   # list of dict per batch
+
+    cur_amounts = None
+    cur_counts  = None
+    in_batch    = False
+    in_summary  = False
 
     for r in range(nrows):
-        row = ws_in.row_values(r)
+        row      = ws_in.row_values(r)
+        col0_str = str(row[0]).strip()
+        col2_str = str(row[2]).strip()
 
-        if str(row[2]).strip() == 'PartnerID':          # header batch
-            if cur_desig is not None:
-                batch_desig_list.append(cur_desig)
-            cur_desig = defaultdict(lambda: defaultdict(float))
-            in_batch  = True
+        # ---- Mulai batch baru ----
+        if col2_str == 'PartnerID':
+            # Simpan batch sebelumnya jika ada
+            if cur_amounts is not None:
+                all_desig_amounts.append(cur_amounts)
+                all_desig_counts.append(cur_counts)
+            cur_amounts = defaultdict(lambda: defaultdict(float))
+            cur_counts  = defaultdict(int)
+            in_batch    = True
+            in_summary  = False
             continue
 
-        if str(row[0]).strip() == 'Total Batch Amount':
+        if col0_str == 'Total Batch Amount':
             in_batch = False
             continue
 
-        if not in_batch:
+        if col0_str == 'For Finance':
+            in_summary = True
+            in_batch   = False
             continue
 
-        pid = clean_pid(row[0])
-        if pid is None:
-            in_batch = False
+        # ---- Batch data row: hitung desig → type → amount ----
+        if in_batch:
+            pid = clean_pid(row[0])
+            if pid is None:
+                in_batch = False
+                continue
+            amount      = row[4] if isinstance(row[4], (int, float)) else 0
+            designation = str(row[5]).strip() if row[5] != '' else ''
+            if designation:
+                if pid in lookup:
+                    dt = lookup[pid]['TYPE']
+                    if dt in ('Mass', 'Middle', 'Major'):
+                        cur_amounts[designation][dt] += amount
+                    else:
+                        # Donor type kosong / bukan Mass-Middle-Major → Unknown
+                        cur_amounts[designation]['Unknown'] += amount
+                else:
+                    # PartnerID tidak ada di Data Sponsor → Unknown
+                    cur_amounts[designation]['Unknown'] += amount
             continue
 
-        amount      = row[4] if isinstance(row[4], (int, float)) else 0
-        designation = str(row[5]).strip() if row[5] != '' else ''
+        # ---- Summary rows: hitung berapa kali tiap designation muncul ----
+        if in_summary:
+            is_data, kind = is_summary_data_row(row)
+            if kind == 'empty':
+                in_summary = False
+                continue
+            if kind == 'subtotal':
+                in_summary = False
+                continue
+            if kind == 'header':
+                continue
+            # Data row
+            designation = str(row[1]).strip() if row[1] not in ('', None) else ''
+            if designation:
+                cur_counts[designation] += 1
 
-        if pid in lookup and designation:
-            dt = lookup[pid]['TYPE']
-            if dt in ('Mass', 'Middle', 'Major'):
-                cur_desig[designation][dt] += amount
-
-    if cur_desig is not None:
-        batch_desig_list.append(cur_desig)
+    # Simpan batch terakhir
+    if cur_amounts is not None:
+        all_desig_amounts.append(cur_amounts)
+        all_desig_counts.append(cur_counts)
 
     # ------------------------------------------------------------------
     # Salin workbook PERSIS (semua formatting, font, ukuran, dll terjaga)
@@ -105,32 +161,25 @@ def process(file_bytes, lookup):
     wb_out = xl_copy(wb_in)
     ws_out = wb_out.get_sheet(0)
 
-    # Style untuk nominal Rp di kolom Mass/Middle/Major (summary)
     rp_style = xlwt.easyxf(
         num_format_str=r'[$Rp-409]#,##0.00_);\([$Rp-409]#,##0.00\)'
     )
+    def write_amount(r, c, val):
+        if isinstance(val, (int, float)) and val > 0:
+            ws_out.write(r, c, val, rp_style)
+        else:
+            ws_out.write(r, c, '-')
 
     # ------------------------------------------------------------------
-    # Pass 2: Tulis DonorType, RM, Mass, Middle, Major ke sel yang tepat
-    #
-    # Struktur header batch (col, 0-indexed):
-    #   col2="PartnerID"  col3="Partner Name"  col4="ChequeDate"
-    #   col5="BankName"   col6="Payment Amount" col7="Designation"
-    #
-    # Di data rows, col6 & col7 KOSONG → kita isi:
-    #   col6 → Donor Type (ganti header "Payment Amount" → "Donor Type")
-    #   col7 → RM         (ganti header "Designation"    → "RM")
-    #
-    # Struktur summary:
-    #   col0="Acount Fund"  col1="Designation"  col2="Description"  col3="Amount"
-    #   Tambah: col4="Mass"  col5="Middle"  col6="Major"
+    # Pass 2: Tulis ke file
     # ------------------------------------------------------------------
     matched       = 0
     not_found     = []
     in_batch      = False
     in_summary    = False
     batch_idx     = -1
-    cur_desig_ref = None
+    cur_amounts_r = None   # desig_amounts untuk batch ini
+    cur_counts_r  = None   # desig_counts  untuk batch ini
 
     for r in range(nrows):
         row      = ws_in.row_values(r)
@@ -142,25 +191,25 @@ def process(file_bytes, lookup):
             in_batch      = True
             in_summary    = False
             batch_idx    += 1
-            cur_desig_ref = batch_desig_list[batch_idx] \
-                            if batch_idx < len(batch_desig_list) else {}
-            # Rename header col6 → "Donor Type", col7 → "RM"
+            cur_amounts_r = all_desig_amounts[batch_idx] \
+                            if batch_idx < len(all_desig_amounts) else {}
+            cur_counts_r  = all_desig_counts[batch_idx]  \
+                            if batch_idx < len(all_desig_counts)  else {}
+            # Rename header: col6 → "Donor Type", col7 → "RM"
             ws_out.write(r, 6, 'Donor Type')
             ws_out.write(r, 7, 'RM')
             continue
 
-        # ---- Akhir data batch ----
         if col0_str == 'Total Batch Amount':
             in_batch = False
             continue
 
-        # ---- Masuk section For Finance ----
         if col0_str == 'For Finance':
             in_summary = True
             in_batch   = False
             continue
 
-        # ---- Data rows batch: isi col6=DonorType, col7=RM ----
+        # ---- Batch data row: isi Donor Type & RM ----
         if in_batch:
             pid = clean_pid(row[0])
             if pid is None:
@@ -178,37 +227,47 @@ def process(file_bytes, lookup):
             ws_out.write(r, 7, rm)
             continue
 
-        # ---- Summary header: tambah Mass / Middle / Major ----
+        # ---- Summary header: tambah Mass / Middle / Major / Unknown ----
         if in_summary and col0_str == 'Acount Fund':
             ws_out.write(r, 4, 'Mass')
             ws_out.write(r, 5, 'Middle')
             ws_out.write(r, 6, 'Major')
+            ws_out.write(r, 7, 'Unknown')
             continue
 
         # ---- Summary data rows ----
         if in_summary:
-            non_empty = [v for v in row if v not in ('', None)]
-            if not non_empty:
+            is_data, kind = is_summary_data_row(row)
+            if kind == 'empty':
                 in_summary = False
                 continue
-            # Baris subtotal: hanya satu angka di col0
-            if len(non_empty) == 1 and isinstance(row[0], (int, float)):
+            if kind == 'subtotal':
                 in_summary = False
+                continue
+            if kind == 'header':
                 continue
 
             designation = str(row[1]).strip() if row[1] not in ('', None) else ''
-            if designation and cur_desig_ref:
-                ta     = cur_desig_ref.get(designation, {})
-                mass   = ta.get('Mass',   0)
-                middle = ta.get('Middle', 0)
-                major  = ta.get('Major',  0)
+            if not designation:
+                continue
 
-                ws_out.write(r, 4, mass   if mass   > 0 else '-',
-                             rp_style if mass   > 0 else xlwt.Style.default_style)
-                ws_out.write(r, 5, middle if middle > 0 else '-',
-                             rp_style if middle > 0 else xlwt.Style.default_style)
-                ws_out.write(r, 6, major  if major  > 0 else '-',
-                             rp_style if major  > 0 else xlwt.Style.default_style)
+            # Designation muncul lebih dari 1x di summary ini → tulis "?"
+            count = cur_counts_r.get(designation, 1)
+            if count > 1:
+                ws_out.write(r, 4, '?')
+                ws_out.write(r, 5, '?')
+                ws_out.write(r, 6, '?')
+                ws_out.write(r, 7, '?')
+            else:
+                ta      = cur_amounts_r.get(designation, {})
+                mass    = ta.get('Mass',    0)
+                middle  = ta.get('Middle',  0)
+                major   = ta.get('Major',   0)
+                unknown = ta.get('Unknown', 0)
+                write_amount(r, 4, mass)
+                write_amount(r, 5, middle)
+                write_amount(r, 6, major)
+                write_amount(r, 7, unknown)
 
     output = BytesIO()
     wb_out.save(output)

@@ -251,22 +251,22 @@ def process(file_bytes, lookup):
             if kind == 'empty':
                 total_row = r + 1
                 
-                ws_out.write(r, 2, 'Total :')
-                write_amount(r, 3, sum_mass + sum_middle + sum_major + sum_unknown)
-                write_amount(r, 4, sum_mass)
-                write_amount(r, 5, sum_middle)
-                write_amount(r, 6, sum_major)
-                write_amount(r, 7, sum_unknown)
+                ws_out.write(total_row, 2, 'Total :')
+                write_amount(total_row, 3, sum_mass + sum_middle + sum_major + sum_unknown)
+                write_amount(total_row, 4, sum_mass)
+                write_amount(total_row, 5, sum_middle)
+                write_amount(total_row, 6, sum_major)
+                write_amount(total_row, 7, sum_unknown)
             
                 in_summary = False
                 continue
             if kind == 'subtotal':
-                ws_out.write(r, 2, 'Total :')
-                write_amount(r, 3, sum_mass + sum_middle + sum_major + sum_unknown)
-                write_amount(r, 4, sum_mass)
-                write_amount(r, 5, sum_middle)
-                write_amount(r, 6, sum_major)
-                write_amount(r, 7, sum_unknown)
+                ws_out.write(total_row, 2, 'Total :')
+                write_amount(total_row, 3, sum_mass + sum_middle + sum_major + sum_unknown)
+                write_amount(total_row, 4, sum_mass)
+                write_amount(total_row, 5, sum_middle)
+                write_amount(total_row, 6, sum_major)
+                write_amount(total_row, 7, sum_unknown)
             
                 in_summary = False
                 continue

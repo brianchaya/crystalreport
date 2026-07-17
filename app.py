@@ -249,6 +249,8 @@ def process(file_bytes, lookup):
         if in_summary:
             is_data, kind = is_summary_data_row(row)
             if kind == 'empty':
+                total_row = r + 1
+                
                 ws_out.write(r, 2, 'Total :')
                 write_amount(r, 3, sum_mass + sum_middle + sum_major + sum_unknown)
                 write_amount(r, 4, sum_mass)

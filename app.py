@@ -170,6 +170,11 @@ def process(file_bytes, lookup):
         else:
             ws_out.write(r, c, '-')
 
+    sum_mass = 0
+    sum_middle = 0
+    sum_major = 0
+    sum_unknown = 0
+    
     # ------------------------------------------------------------------
     # Pass 2: Tulis ke file
     # ------------------------------------------------------------------
@@ -206,7 +211,12 @@ def process(file_bytes, lookup):
 
         if col0_str == 'For Finance':
             in_summary = True
-            in_batch   = False
+            in_batch = False
+        
+            sum_mass = 0
+            sum_middle = 0
+            sum_major = 0
+            sum_unknown = 0
             continue
 
         # ---- Batch data row: isi Donor Type & RM ----
@@ -239,9 +249,23 @@ def process(file_bytes, lookup):
         if in_summary:
             is_data, kind = is_summary_data_row(row)
             if kind == 'empty':
+                ws_out.write(r, 2, 'Total :')
+                write_amount(r, 3, sum_mass + sum_middle + sum_major + sum_unknown)
+                write_amount(r, 4, sum_mass)
+                write_amount(r, 5, sum_middle)
+                write_amount(r, 6, sum_major)
+                write_amount(r, 7, sum_unknown)
+            
                 in_summary = False
                 continue
             if kind == 'subtotal':
+                ws_out.write(r, 2, 'Total :')
+                write_amount(r, 3, sum_mass + sum_middle + sum_major + sum_unknown)
+                write_amount(r, 4, sum_mass)
+                write_amount(r, 5, sum_middle)
+                write_amount(r, 6, sum_major)
+                write_amount(r, 7, sum_unknown)
+            
                 in_summary = False
                 continue
             if kind == 'header':
@@ -268,6 +292,10 @@ def process(file_bytes, lookup):
                 write_amount(r, 5, middle)
                 write_amount(r, 6, major)
                 write_amount(r, 7, unknown)
+                sum_mass += mass
+                sum_middle += middle
+                sum_major += major
+                sum_unknown += unknown
 
     output = BytesIO()
     wb_out.save(output)

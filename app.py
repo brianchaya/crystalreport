@@ -261,8 +261,9 @@ def process(file_bytes, lookup):
                 in_summary = False
                 continue
             if kind == 'subtotal':
-                total_row = r + 1
+                total_row = r
                 
+                ws_out.write(total_row, 0, '')
                 ws_out.write(total_row, 2, 'Total :')
                 write_amount(total_row, 3, sum_mass + sum_middle + sum_major + sum_unknown)
                 write_amount(total_row, 4, sum_mass)
